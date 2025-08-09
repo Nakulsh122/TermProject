@@ -11,6 +11,12 @@ Current Tasks :
 a) Select the sensors and chips that will be required.
 b) Complete a Interface to see the Ground Error while tracking the IMU sensors data and visualise the calculated trajectory.
 
+Sensors Being Used :
+
+a) IMU : 
+b) Microcontroller : 
+c) Network Protocol : 
+
 Completed Tasks : 
 
 Overleaf Report Link : 
