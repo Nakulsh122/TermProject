@@ -23,3 +23,9 @@ Overleaf Report Link :
 
 Resources Link : 
 
+Steps to Run : 
+
+COnnect the ESP , 
+Check for com port and Baud Rate 
+Add in the script 
+run the script 
