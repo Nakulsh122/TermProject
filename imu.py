@@ -24,7 +24,6 @@ time.sleep(2)
 print("Calibrating... keep sensor still")
 accel_offset = np.zeros(3)
 gyro_offset = np.zeros(3)
-
 count = 0
 while count < CALIB_SAMPLES:
     line = ser.readline().decode(errors='ignore').strip()
@@ -40,11 +39,8 @@ while count < CALIB_SAMPLES:
 
 accel_offset /= CALIB_SAMPLES
 gyro_offset /= CALIB_SAMPLES
-accel_offset[2] -= 9.81  # Correct Z gravity
-
-print("Calibration done!")
-print("Accel offset:", accel_offset)
-print("Gyro offset:", gyro_offset)
+accel_offset[2] -= 9.81  # gravity
+print("Calibration done")
 
 # ------------------- Madgwick -------------------
 madgwick = Madgwick(beta=BETA, sampleperiod=1.0/INITIAL_SAMPLE_HZ)
@@ -53,29 +49,40 @@ last_time = None
 
 # ------------------- Buffers -------------------
 t_data, ax_data, ay_data, az_data = [], [], [], []
+gx_data, gy_data, gz_data = [], [], []
 roll_data, pitch_data, yaw_data = [], [], []
 
 # ------------------- GUI -------------------
 app = QtWidgets.QApplication([])
 
-# Window 1: Graphs
+# 2D Plots
 win = pg.GraphicsLayoutWidget(show=True, title="MPU6050 Realtime (Madgwick)")
-win.resize(1000, 600)
+win.resize(1000, 900)
 
+# Acceleration
 p1 = win.addPlot(title="Acceleration (m/s²)")
 p1.addLegend()
 curve_ax = p1.plot(pen='r', name="ax")
 curve_ay = p1.plot(pen='g', name="ay")
 curve_az = p1.plot(pen='b', name="az")
-
 win.nextRow()
-p2 = win.addPlot(title="Orientation (deg)")
-p2.addLegend()
-curve_roll = p2.plot(pen='r', name="Roll")
-curve_pitch = p2.plot(pen='g', name="Pitch")
-curve_yaw = p2.plot(pen='b', name="Yaw")
 
-# Window 2: 3D Cube
+# Gyroscope
+p2 = win.addPlot(title="Gyroscope (deg/s)")
+p2.addLegend()
+curve_gx = p2.plot(pen='r', name="gx")
+curve_gy = p2.plot(pen='g', name="gy")
+curve_gz = p2.plot(pen='b', name="gz")
+win.nextRow()
+
+# Orientation
+p3 = win.addPlot(title="Orientation (deg)")
+p3.addLegend()
+curve_roll = p3.plot(pen='r', name="Roll")
+curve_pitch = p3.plot(pen='g', name="Pitch")
+curve_yaw = p3.plot(pen='b', name="Yaw")
+
+# 3D Cube
 w3d = gl.GLViewWidget()
 w3d.setWindowTitle('Orientation Cube (Madgwick)')
 w3d.setCameraPosition(distance=10, azimuth=45, elevation=20)
@@ -84,22 +91,18 @@ w3d.show()
 axis = gl.GLAxisItem()
 axis.setSize(3,3,3)
 w3d.addItem(axis)
-
 grid = gl.GLGridItem()
 grid.scale(2,2,1)
 w3d.addItem(grid)
 
 verts = np.array([
-    [1,1,1], [1,1,-1], [1,-1,-1], [1,-1,1],
-    [-1,1,1], [-1,1,-1], [-1,-1,-1], [-1,-1,1]
+    [1,1,1],[1,1,-1],[1,-1,-1],[1,-1,1],
+    [-1,1,1],[-1,1,-1],[-1,-1,-1],[-1,-1,1]
 ])
 faces = np.array([
-    [0,1,2], [0,2,3],
-    [4,5,6], [4,6,7],
-    [0,1,5], [0,5,4],
-    [2,3,7], [2,7,6],
-    [1,2,6], [1,6,5],
-    [0,3,7], [0,7,4]
+    [0,1,2],[0,2,3],[4,5,6],[4,6,7],
+    [0,1,5],[0,5,4],[2,3,7],[2,7,6],
+    [1,2,6],[1,6,5],[0,3,7],[0,7,4]
 ])
 colors = np.array([[1,0,0,0.6]]*2 + [[0,1,0,0.6]]*2 +
                   [[0,0,1,0.6]]*2 + [[1,1,0,0.6]]*2 +
@@ -144,7 +147,6 @@ def update():
     parts = line.split(',')
     if len(parts) != 7:
         return
-
     try:
         t_ms, ax, ay, az, gx, gy, gz = map(float, parts)
     except:
@@ -164,28 +166,29 @@ def update():
     last_time = t_ms
     madgwick.sampleperiod = dt
 
-    # Gyro in rad/s
+    # Gyro rad/s
     g = np.radians([gx, gy, gz]) if GYRO_IN_DEG else np.array([gx,gy,gz])
     a = np.array([ax, ay, az])
-
-    # Update filter
     q = madgwick.updateIMU(q, gyr=g, acc=a)
-
-    # Euler angles
     roll, pitch, yaw = quat_to_euler_deg(q)
 
     # Store data
     t_sec = t_ms/1000.0
     t_data.append(t_sec); ax_data.append(ax); ay_data.append(ay); az_data.append(az)
+    gx_data.append(gx); gy_data.append(gy); gz_data.append(gz)
     roll_data.append(roll); pitch_data.append(pitch); yaw_data.append(yaw)
     if len(t_data) > MAX_POINTS:
         t_data.pop(0); ax_data.pop(0); ay_data.pop(0); az_data.pop(0)
+        gx_data.pop(0); gy_data.pop(0); gz_data.pop(0)
         roll_data.pop(0); pitch_data.pop(0); yaw_data.pop(0)
 
     # Update plots
     curve_ax.setData(t_data, ax_data)
     curve_ay.setData(t_data, ay_data)
     curve_az.setData(t_data, az_data)
+    curve_gx.setData(t_data, gx_data)
+    curve_gy.setData(t_data, gy_data)
+    curve_gz.setData(t_data, gz_data)
     curve_roll.setData(t_data, roll_data)
     curve_pitch.setData(t_data, pitch_data)
     curve_yaw.setData(t_data, yaw_data)
@@ -193,9 +196,8 @@ def update():
     # Update cube
     cube_set_quat(q)
 
-# ------------------- Timer -------------------
 timer = QtCore.QTimer()
 timer.timeout.connect(update)
-timer.start(15)  # ~66Hz update
+timer.start(15)  # ~66Hz
 
 app.exec()

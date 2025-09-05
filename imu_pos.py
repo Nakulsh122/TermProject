@@ -6,21 +6,23 @@ from pyqtgraph.Qt.QtGui import QMatrix4x4
 from ahrs.filters import Madgwick
 
 # ========= USER SETTINGS =========
-PORT = 'COM7'          # your ESP32 COM port
+PORT = 'COM7'
 BAUD = 115200
-GYRO_IN_DEG = True     # True if gx,gy,gz are in deg/s, False if rad/s
+GYRO_IN_DEG = True
 BETA = 0.25
 INITIAL_SAMPLE_HZ = 100.0
 # =================================
 
 ser = serial.Serial(PORT, BAUD, timeout=0)
+
+# PyQt app
 app = QtWidgets.QApplication([])
 
-# ----- Window: Graphs -----
-win = pg.GraphicsLayoutWidget(show=True, title="MPU6050 Realtime (Madgwick + XY Position)")
-win.resize(1000, 800)
+# ----- Graphs -----
+win = pg.GraphicsLayoutWidget(show=True, title="IMU Realtime (Madgwick + Position)")
+win.resize(1200, 1000)
 
-# Plot 1: Acceleration
+# 1) Accel
 p1 = win.addPlot(title="Acceleration (m/s²)")
 p1.addLegend()
 curve_ax = p1.plot(pen='r', name="ax")
@@ -29,24 +31,37 @@ curve_az = p1.plot(pen='b', name="az")
 
 win.nextRow()
 
-# Plot 2: Orientation
-p2 = win.addPlot(title="Orientation (deg)")
+# 2) Gyro
+p2 = win.addPlot(title="Gyroscope (deg/s)")
 p2.addLegend()
-curve_roll = p2.plot(pen='r', name="Roll")
-curve_pitch = p2.plot(pen='g', name="Pitch")
-curve_yaw = p2.plot(pen='b', name="Yaw")
+curve_gx = p2.plot(pen='r', name="gx")
+curve_gy = p2.plot(pen='g', name="gy")
+curve_gz = p2.plot(pen='b', name="gz")
 
 win.nextRow()
 
-# Plot 3: Position (X,Y only)
-p3 = win.addPlot(title="Position (m)")
+# 3) Orientation
+p3 = win.addPlot(title="Orientation (deg)")
 p3.addLegend()
-curve_px = p3.plot(pen='r', name="X")
-curve_py = p3.plot(pen='g', name="Y")
+curve_roll = p3.plot(pen='r', name="Roll")
+curve_pitch = p3.plot(pen='g', name="Pitch")
+curve_yaw = p3.plot(pen='b', name="Yaw")
 
-# ----- Window: 3D Cube -----
+win.nextRow()
+
+# 4) Position X
+p4 = win.addPlot(title="Position X (m)")
+curve_px = p4.plot(pen='r')
+
+win.nextRow()
+
+# 5) Position Y
+p5 = win.addPlot(title="Position Y (m)")
+curve_py = p5.plot(pen='g')
+
+# ----- 3D Cube -----
 w3d = gl.GLViewWidget()
-w3d.setWindowTitle('Orientation Cube (Madgwick)')
+w3d.setWindowTitle('Orientation Cube')
 w3d.setCameraPosition(distance=10, azimuth=45, elevation=20)
 w3d.show()
 
@@ -80,20 +95,20 @@ w3d.addItem(cube)
 
 # Buffers
 MAX_POINTS = 300
-t_data, ax_data, ay_data, az_data = [], [], [], []
+t_data = []
+ax_data, ay_data, az_data = [], [], []
+gx_data, gy_data, gz_data = [], [], []
 roll_data, pitch_data, yaw_data = [], [], []
 px_data, py_data = [], []
 
-# Madgwick
+# State
 madgwick = Madgwick(beta=BETA, sampleperiod=1.0/INITIAL_SAMPLE_HZ)
-q = np.array([1.0, 0.0, 0.0, 0.0])  # quaternion
+q = np.array([1.0,0.0,0.0,0.0])
 last_time = None
 
-# Position state
-vx, vy = 0.0, 0.0
-px, py = 0.0, 0.0
+vel = np.zeros(3)
+pos = np.zeros(3)
 
-# ---------- Helpers ----------
 def quat_to_euler_deg(q):
     w, x, y, z = q
     roll = math.degrees(math.atan2(2*(w*x + y*z), 1 - 2*(x*x + y*y)))
@@ -101,14 +116,6 @@ def quat_to_euler_deg(q):
     pitch = math.degrees(math.asin(s))
     yaw = math.degrees(math.atan2(2*(w*z + x*y), 1 - 2*(y*y + z*z)))
     return roll, pitch, yaw
-
-def quat_to_rotation_matrix(q):
-    w, x, y, z = q
-    return np.array([
-        [1-2*(y*y+z*z),   2*(x*y - w*z),   2*(x*z + w*y)],
-        [2*(x*y + w*z),   1-2*(x*x+z*z),   2*(y*z - w*x)],
-        [2*(x*z - w*y),   2*(y*z + w*x),   1-2*(x*x+y*y)]
-    ])
 
 def cube_set_quat(q):
     w, x, y, z = q
@@ -121,11 +128,21 @@ def cube_set_quat(q):
     cube.resetTransform()
     cube.setTransform(QMatrix4x4(*R.flatten()))
 
-# ---------- Update Loop ----------
-def update():
-    global last_time, q, vx, vy, px, py
+def get_motion_accel(q, ax, ay, az):
+    w, x, y, z = q
+    R = np.array([
+        [1-2*(y*y+z*z),   2*(x*y - w*z),   2*(x*z + w*y)],
+        [2*(x*y + w*z),   1-2*(x*x+z*z),   2*(y*z - w*x)],
+        [2*(x*z - w*y),   2*(y*z + w*x),   1-2*(x*x+y*y)]
+    ])
+    a_sensor = np.array([ax, ay, az])
+    a_world = R @ a_sensor
+    return a_world - np.array([0,0,9.81])
 
-    # read last available line
+def update():
+    global last_time, q, vel, pos
+
+    # read latest line
     line = None
     while ser.in_waiting:
         try:
@@ -136,9 +153,7 @@ def update():
     if not line: return
 
     parts = line.split(",")
-    if len(parts) != 7:
-        return
-
+    if len(parts) != 7: return
     try:
         t_ms, ax, ay, az, gx, gy, gz = map(float, parts)
     except ValueError:
@@ -151,53 +166,49 @@ def update():
     if dt <= 0: return
     last_time = t_ms
 
-    # Update filter sample period
-    try: madgwick.sampleperiod = dt
-    except: pass
+    madgwick.sampleperiod = dt
 
-    # Convert units
-    g = np.radians([gx, gy, gz]) if GYRO_IN_DEG else np.array([gx, gy, gz], dtype=float)
-    a = np.array([ax, ay, az], dtype=float)
+    g = np.radians([gx, gy, gz]) if GYRO_IN_DEG else np.array([gx,gy,gz])
+    a = np.array([ax, ay, az])
 
-    # Madgwick update
     q = madgwick.updateIMU(q, gyr=g, acc=a)
-
-    # Orientation
     roll, pitch, yaw = quat_to_euler_deg(q)
 
-    # ---- Position Estimation (X/Y only) ----
-    R = quat_to_rotation_matrix(q)
-    a_world = R.dot(a)
-    a_world[2] -= 9.81  # subtract gravity from Z
+    a_motion = get_motion_accel(q, ax, ay, az)
 
-    vx += a_world[0] * dt
-    vy += a_world[1] * dt
+    vel += a_motion * dt
+    pos += vel * dt
 
-    px += vx * dt
-    py += vy * dt
+    if np.linalg.norm(a_motion) < 0.1 and np.linalg.norm([gx,gy,gz]) < 1.0:
+        vel[:] = 0.0
 
-    # ---- Buffers ----
+    # Store
     t_data.append(t_ms/1000.0)
     ax_data.append(ax); ay_data.append(ay); az_data.append(az)
+    gx_data.append(gx); gy_data.append(gy); gz_data.append(gz)
     roll_data.append(roll); pitch_data.append(pitch); yaw_data.append(yaw)
-    px_data.append(px); py_data.append(py)
+    px_data.append(pos[0]); py_data.append(pos[1])
 
     if len(t_data) > MAX_POINTS:
-        t_data.pop(0); ax_data.pop(0); ay_data.pop(0); az_data.pop(0)
-        roll_data.pop(0); pitch_data.pop(0); yaw_data.pop(0)
-        px_data.pop(0); py_data.pop(0)
+        for arr in [t_data, ax_data, ay_data, az_data,
+                    gx_data, gy_data, gz_data,
+                    roll_data, pitch_data, yaw_data,
+                    px_data, py_data]:
+            arr.pop(0)
 
-    # ---- Update plots ----
+    # Update plots
     curve_ax.setData(t_data, ax_data)
     curve_ay.setData(t_data, ay_data)
     curve_az.setData(t_data, az_data)
+    curve_gx.setData(t_data, gx_data)
+    curve_gy.setData(t_data, gy_data)
+    curve_gz.setData(t_data, gz_data)
     curve_roll.setData(t_data, roll_data)
     curve_pitch.setData(t_data, pitch_data)
     curve_yaw.setData(t_data, yaw_data)
     curve_px.setData(t_data, px_data)
     curve_py.setData(t_data, py_data)
 
-    # ---- Update cube ----
     cube_set_quat(q)
 
 timer = QtCore.QTimer()

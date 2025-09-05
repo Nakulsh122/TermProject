@@ -8,14 +8,14 @@ Project Title : Gesture Control of Smart Application using an IMU sensors
 
 Current Tasks : 
 
-a) Select the sensors and chips that will be required.
+a) Select the sensors and chips that will be required. 
 b) Complete a Interface to see the Ground Error while tracking the IMU sensors data and visualise the calculated trajectory.
 
 Sensors Being Used :
 
-a) IMU : 
-b) Microcontroller : 
-c) Network Protocol : 
+a) IMU : MPU6050
+b) Microcontroller : ESP 32 
+c) Network Protocol : Wifi
 
 Completed Tasks : 
 
@@ -23,7 +23,3 @@ Overleaf Report Link :
 
 Resources Link : 
 
-ML : 
-Open CV : 
-Python : 
-Libraries : 
