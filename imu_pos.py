@@ -59,6 +59,10 @@ win.nextRow()
 p5 = win.addPlot(title="Position Y (m)")
 curve_py = p5.plot(pen='g')
 
+p6 = win.addPlot(title="XY Trajectory (Top-Down View)")
+p6.setAspectLocked(True)   # keep X and Y scale equal
+curve_xy = p6.plot(pen='w')  # white line path
+
 # ----- 3D Cube -----
 w3d = gl.GLViewWidget()
 w3d.setWindowTitle('Orientation Cube')
@@ -208,6 +212,9 @@ def update():
     curve_yaw.setData(t_data, yaw_data)
     curve_px.setData(t_data, px_data)
     curve_py.setData(t_data, py_data)
+
+    curve_xy.setData(px_data, py_data)
+
 
     cube_set_quat(q)
 
