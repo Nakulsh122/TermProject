@@ -46,7 +46,8 @@
 
   void setup() {
     Serial.begin(115200);
-    Wire.begin();
+    Wire.begin(18, 19);
+
 
     mpu.initialize();
     if (!mpu.testConnection()) {
