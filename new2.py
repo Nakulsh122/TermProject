@@ -1,4 +1,4 @@
-# gesture_tracking_imu.py
+# enhanced_gesture_tracking_imu.py
 import serial
 import math
 import numpy as np
@@ -6,20 +6,23 @@ import pyqtgraph as pg
 from pyqtgraph.Qt import QtCore, QtWidgets
 from ahrs.filters import Madgwick
 import time
+import json
+import os
 from collections import deque
 from scipy import signal
 from scipy.spatial.distance import euclidean
 from sklearn.preprocessing import StandardScaler
+import pickle
 
 # ---------------- CONFIG ----------------
 PORT = 'COM7'
 BAUD = 115200
 GYRO_IN_DEG = True
 SAMPLE_HZ = 100.0
-GESTURE_WINDOW = 2.0  # seconds
+GESTURE_WINDOW = 1.25  # seconds
 MAX_GESTURE_POINTS = int(GESTURE_WINDOW * SAMPLE_HZ)
 
-# Gesture-specific parameters
+# Gesture-specific parameters (from better previous version)
 BETA_DEFAULT = 0.1  # Lower for smoother orientation during gestures
 HPF_ALPHA_DEFAULT = 0.96  # Less aggressive for gesture motion
 LPF_ALPHA_DEFAULT = 0.7   # More responsive for gesture dynamics
@@ -32,25 +35,50 @@ GESTURE_MAX_DURATION = 2.5  # Maximum gesture duration (seconds)
 VEL_DECAY = 0.98  # Velocity decay for gesture tracking
 POS_SMOOTHING = 0.85  # Position smoothing for gestures
 
+# Data storage settings
+GESTURES_FOLDER = "gesture_data"
+METADATA_FILE = "gesture_metadata.json"
+
+# Create folders if they don't exist
+if not os.path.exists(GESTURES_FOLDER):
+    os.makedirs(GESTURES_FOLDER)
+
 # ---------------- SERIAL ----------------
-ser = serial.Serial(PORT, BAUD, timeout=0)
-time.sleep(1.0)
+try:
+    ser = serial.Serial(PORT, BAUD, timeout=0)
+    time.sleep(1.0)
+    serial_connected = True
+except:
+    print("Serial connection failed - running in demo mode")
+    serial_connected = False
+    ser = None
 
 # ---------------- GUI ----------------
 app = QtWidgets.QApplication([])
 win = QtWidgets.QWidget()
-win.setWindowTitle("Gesture Tracking with IMU")
+win.setWindowTitle("Enhanced Gesture Tracking with Labeling")
 win.resize(1800, 1100)
 main_layout = QtWidgets.QVBoxLayout(win)
 
-# ---------------- Gesture Controls ----------------
+# ---------------- Enhanced Controls ----------------
 control_layout = QtWidgets.QHBoxLayout()
 main_layout.addLayout(control_layout)
 
-# Gesture detection controls
-gesture_group = QtWidgets.QGroupBox("Gesture Detection")
-gesture_layout = QtWidgets.QHBoxLayout(gesture_group)
+# Gesture detection and labeling controls
+gesture_group = QtWidgets.QGroupBox("Gesture Recording & Labeling")
+gesture_layout = QtWidgets.QVBoxLayout(gesture_group)
 
+# Label input section
+label_layout = QtWidgets.QHBoxLayout()
+label_input = QtWidgets.QLineEdit()
+label_input.setPlaceholderText("Enter gesture label (e.g., 'wave', 'circle', 'swipe')")
+label_input.setFixedWidth(250)
+label_layout.addWidget(QtWidgets.QLabel("Gesture Label:"))
+label_layout.addWidget(label_input)
+gesture_layout.addLayout(label_layout)
+
+# Button layout
+button_layout = QtWidgets.QHBoxLayout()
 start_gesture_btn = QtWidgets.QPushButton("Start Recording")
 stop_gesture_btn = QtWidgets.QPushButton("Stop Recording")
 clear_gesture_btn = QtWidgets.QPushButton("Clear Gesture")
@@ -58,15 +86,21 @@ save_gesture_btn = QtWidgets.QPushButton("Save Gesture")
 auto_detect_cb = QtWidgets.QCheckBox("Auto Detect")
 auto_detect_cb.setChecked(True)
 
-gesture_layout.addWidget(start_gesture_btn)
-gesture_layout.addWidget(stop_gesture_btn)
-gesture_layout.addWidget(clear_gesture_btn)
-gesture_layout.addWidget(save_gesture_btn)
-gesture_layout.addWidget(auto_detect_cb)
+# Enhanced button styling
+start_gesture_btn.setStyleSheet("QPushButton { background-color: #4CAF50; color: white; font-weight: bold; }")
+stop_gesture_btn.setStyleSheet("QPushButton { background-color: #f44336; color: white; font-weight: bold; }")
+save_gesture_btn.setStyleSheet("QPushButton { background-color: #2196F3; color: white; font-weight: bold; }")
+
+button_layout.addWidget(start_gesture_btn)
+button_layout.addWidget(stop_gesture_btn)
+button_layout.addWidget(clear_gesture_btn)
+button_layout.addWidget(save_gesture_btn)
+button_layout.addWidget(auto_detect_cb)
+gesture_layout.addLayout(button_layout)
 
 control_layout.addWidget(gesture_group)
 
-# Parameter controls
+# Parameter controls (from better version)
 param_group = QtWidgets.QGroupBox("Parameters")
 param_layout = QtWidgets.QGridLayout(param_group)
 
@@ -98,6 +132,24 @@ for i, (name, default, (min_val, max_val)) in enumerate(zip(slider_names, slider
 
 control_layout.addWidget(param_group)
 
+# Dataset management section
+dataset_group = QtWidgets.QGroupBox("Dataset Management")
+dataset_layout = QtWidgets.QVBoxLayout(dataset_group)
+
+dataset_info_label = QtWidgets.QLabel("Dataset: 0 gestures")
+dataset_buttons_layout = QtWidgets.QHBoxLayout()
+load_dataset_btn = QtWidgets.QPushButton("Load Dataset")
+export_dataset_btn = QtWidgets.QPushButton("Export Dataset")
+clear_dataset_btn = QtWidgets.QPushButton("Clear Dataset")
+
+dataset_buttons_layout.addWidget(load_dataset_btn)
+dataset_buttons_layout.addWidget(export_dataset_btn) 
+dataset_buttons_layout.addWidget(clear_dataset_btn)
+
+dataset_layout.addWidget(dataset_info_label)
+dataset_layout.addLayout(dataset_buttons_layout)
+control_layout.addWidget(dataset_group)
+
 def get_slider_values():
     return [scale_slider_value(s.value(), min_val, max_val) 
             for s, (min_val, max_val) in zip(sliders, slider_ranges)]
@@ -110,9 +162,10 @@ def update_labels():
 for s in sliders:
     s.valueChanged.connect(update_labels)
 
-# Status and metrics
+# Status and metrics (enhanced)
 status_layout = QtWidgets.QHBoxLayout()
 status_label = QtWidgets.QLabel("Status: Ready for gesture")
+status_label.setStyleSheet("QLabel { color: green; font-weight: bold; }")
 gesture_info_label = QtWidgets.QLabel("Gesture: None")
 metrics_label = QtWidgets.QLabel("Metrics: -")
 status_layout.addWidget(status_label)
@@ -176,7 +229,7 @@ p9 = plot_widget.addPlot(title="Gesture Features")
 curve_speed_profile = p9.plot(pen='c', name='Speed')
 curve_curvature = p9.plot(pen='m', name='Curvature')
 
-# ---------------- Gesture Tracking Data Structures ----------------
+# ---------------- Data Structures (from better version) ----------------
 # Real-time buffers (circular for efficiency)
 buffer_size = int(5.0 * SAMPLE_HZ)  # 5 second buffer
 t_buf = deque(maxlen=buffer_size)
@@ -190,12 +243,13 @@ gesture_state_buf = deque(maxlen=buffer_size)
 vx_buf = deque(maxlen=buffer_size); vy_buf = deque(maxlen=buffer_size); vz_buf = deque(maxlen=buffer_size)
 pos_x_buf = deque(maxlen=buffer_size); pos_y_buf = deque(maxlen=buffer_size); pos_z_buf = deque(maxlen=buffer_size)
 
-# Gesture recording
+# Enhanced gesture recording with labeling
 gesture_recording = False
 gesture_data = []
 gesture_start_time = None
 gesture_end_time = None
 current_gesture = {
+    'label': '',
     'timestamps': [],
     'positions': [],
     'velocities': [],
@@ -204,17 +258,17 @@ current_gesture = {
     'angular_velocities': []
 }
 
-# Filter states
+# Filter states (from better version)
 madgwick = Madgwick(beta=BETA_DEFAULT, sampleperiod=1.0/SAMPLE_HZ)
 q = np.array([1.0, 0.0, 0.0, 0.0])
 last_time = None
 
-# Motion tracking
+# Motion tracking (better implementation)
 velocity = np.zeros(3)
 position = np.zeros(3)
 prev_accel_world = np.zeros(3)
 
-# Gesture detection state
+# Gesture detection state (from better version)
 gesture_state = 0  # 0: idle, 1: detecting, 2: recording
 motion_start_time = None
 last_significant_motion = None
@@ -222,6 +276,10 @@ last_significant_motion = None
 # Calibration
 accel_bias = np.zeros(3)
 gyro_bias = np.zeros(3)
+
+# Enhanced dataset management
+gesture_counter = {}  # Track count per label
+total_gestures = 0
 
 # Gesture metrics
 gesture_metrics = {
@@ -232,40 +290,67 @@ gesture_metrics = {
     'displacement': 0
 }
 
-# ---------------- Gesture Functions ----------------
-def calculate_motion_magnitude(ax, ay, az, gx, gy, gz):
-    """Calculate combined motion magnitude for gesture detection"""
-    accel_mag = math.sqrt(ax*ax + ay*ay + az*az)
-    gyro_mag = math.sqrt(gx*gx + gy*gy + gz*gz)
-    # Weight acceleration more heavily for gesture detection
-    return accel_mag + 0.3 * gyro_mag
+# Load existing dataset metadata
+def load_gesture_metadata():
+    global gesture_counter, total_gestures
+    try:
+        if os.path.exists(METADATA_FILE):
+            with open(METADATA_FILE, 'r') as f:
+                data = json.load(f)
+                gesture_counter = data.get('counter', {})
+                total_gestures = data.get('total', 0)
+    except:
+        gesture_counter = {}
+        total_gestures = 0
 
-def detect_gesture_boundaries(motion_magnitudes, timestamps, motion_thresh, stillness_thresh):
-    """Auto-detect gesture start and end based on motion"""
-    if len(motion_magnitudes) < 10:
-        return None, None
+def save_gesture_metadata():
+    try:
+        with open(METADATA_FILE, 'w') as f:
+            json.dump({
+                'counter': gesture_counter,
+                'total': total_gestures,
+                'last_updated': time.time()
+            }, f, indent=2)
+    except Exception as e:
+        print(f"Error saving metadata: {e}")
+
+load_gesture_metadata()
+
+# ---------------- Gesture Functions (from better version) ----------------
+def calculate_enhanced_motion_magnitude(ax, ay, az, gx, gy, gz, q):
+    """Enhanced motion magnitude that's orientation-independent"""
+    # Calculate acceleration in world frame first
+    def rotate_vector_by_quaternion(v, q):
+        w, x, y, z = q
+        qv = np.array([0, v[0], v[1], v[2]])
+        temp = np.array([
+            -x*qv[1] - y*qv[2] - z*qv[3],
+            w*qv[1] + y*qv[3] - z*qv[2],
+            w*qv[2] + z*qv[1] - x*qv[3],
+            w*qv[3] + x*qv[2] - y*qv[1]
+        ])
+        result = np.array([
+            temp[0]*w + temp[1]*x + temp[2]*y + temp[3]*z,
+            -temp[0]*x + temp[1]*w - temp[2]*z + temp[3]*y,
+            -temp[0]*y + temp[1]*z + temp[2]*w - temp[3]*x,
+            -temp[0]*z - temp[1]*y + temp[2]*x + temp[3]*w
+        ])
+        return result[1:4]
     
-    # Find motion peaks
-    above_threshold = np.array(motion_magnitudes) > motion_thresh
+    # Transform acceleration to world frame
+    accel_world = rotate_vector_by_quaternion(np.array([ax, ay, az]), q)
     
-    if not np.any(above_threshold):
-        return None, None
+    # Remove gravity component
+    gravity_sensor = np.array([0, 0, 1])
+    gravity_world = rotate_vector_by_quaternion(gravity_sensor, q) * 9.81
+    accel_motion = accel_world - gravity_world
     
-    # Find first significant motion
-    start_idx = np.where(above_threshold)[0][0]
+    # Calculate motion magnitude using world-frame motion
+    accel_mag = np.linalg.norm(accel_motion)
+    gyro_mag = math.sqrt(gx*gx + gy*gy + gz*gz)
     
-    # Find last significant motion (looking backwards from recent data)
-    end_candidates = np.where(np.array(motion_magnitudes[-50:]) < stillness_thresh)[0]
-    if len(end_candidates) > 5:  # Need sustained stillness
-        end_idx = len(motion_magnitudes) - 50 + end_candidates[0]
-    else:
-        end_idx = len(motion_magnitudes) - 1
-    
-    if end_idx <= start_idx or (end_idx - start_idx) < 10:
-        return None, None
-    
-    return timestamps[start_idx] if start_idx < len(timestamps) else None, \
-           timestamps[end_idx] if end_idx < len(timestamps) else None
+    # Weight both components
+    return accel_mag * 0.7 + gyro_mag * 0.3
 
 def calculate_gesture_metrics(positions, velocities, timestamps):
     """Calculate gesture analysis metrics"""
@@ -303,6 +388,7 @@ def reset_gesture():
     """Reset current gesture data"""
     global current_gesture, position, velocity, gesture_metrics
     current_gesture = {
+        'label': '',
         'timestamps': [],
         'positions': [],
         'velocities': [],
@@ -315,16 +401,34 @@ def reset_gesture():
     gesture_metrics = {'duration': 0, 'path_length': 0, 'max_speed': 0, 'avg_speed': 0, 'displacement': 0}
 
 def save_gesture_data():
-    """Save current gesture to file"""
+    """Enhanced save with labeling system"""
+    global total_gestures, gesture_counter
+    
     if not current_gesture['timestamps']:
         status_label.setText("No gesture data to save")
+        status_label.setStyleSheet("QLabel { color: red; font-weight: bold; }")
         return
     
-    timestamp = int(time.time())
-    filename = f"gesture_{timestamp}.csv"
+    # Get label from input field
+    label = label_input.text().strip()
+    if not label:
+        status_label.setText("Error: Please enter a gesture label!")
+        status_label.setStyleSheet("QLabel { color: red; font-weight: bold; }")
+        return
+    
+    # Update counter
+    if label not in gesture_counter:
+        gesture_counter[label] = 0
+    gesture_counter[label] += 1
+    total_gestures += 1
+    
+    # Create filename with incremental counter
+    filename = f"{label}_{gesture_counter[label]:03d}"
     
     try:
-        with open(filename, 'w') as f:
+        # Save as CSV
+        csv_path = os.path.join(GESTURES_FOLDER, f"{filename}.csv")
+        with open(csv_path, 'w') as f:
             f.write("time,pos_x,pos_y,pos_z,vel_x,vel_y,vel_z,roll,pitch,yaw,ax,ay,az,gx,gy,gz\n")
             for i in range(len(current_gesture['timestamps'])):
                 row = [
@@ -337,23 +441,86 @@ def save_gesture_data():
                 ]
                 f.write(','.join(map(str, row)) + '\n')
         
-        status_label.setText(f"Gesture saved to {filename}")
+        # Save as pickle for ML
+        pkl_path = os.path.join(GESTURES_FOLDER, f"{filename}.pkl")
+        gesture_data_full = {
+            'label': label,
+            'filename': filename,
+            'timestamp': time.time(),
+            'data': current_gesture,
+            'metrics': gesture_metrics,
+            'sample_rate': SAMPLE_HZ
+        }
+        with open(pkl_path, 'wb') as f:
+            pickle.dump(gesture_data_full, f)
         
-        # Also save metrics
-        with open(f"gesture_metrics_{timestamp}.txt", 'w') as f:
-            for key, value in gesture_metrics.items():
-                f.write(f"{key}: {value:.4f}\n")
-                
+        # Save metadata
+        save_gesture_metadata()
+        
+        status_label.setText(f"Saved: {filename}")
+        status_label.setStyleSheet("QLabel { color: green; font-weight: bold; }")
+        
+        # Update dataset display
+        update_dataset_info()
+        
+        # Clear input for next gesture
+        label_input.clear()
+        
     except Exception as e:
         status_label.setText(f"Error saving: {str(e)}")
+        status_label.setStyleSheet("QLabel { color: red; font-weight: bold; }")
+
+def update_dataset_info():
+    unique_labels = len(gesture_counter)
+    dataset_info_label.setText(f"Dataset: {total_gestures} gestures, {unique_labels} unique labels")
+
+def export_dataset():
+    """Export complete dataset"""
+    try:
+        export_data = {
+            'metadata': {
+                'total_gestures': total_gestures,
+                'gesture_counter': gesture_counter,
+                'export_time': time.time(),
+                'sample_rate': SAMPLE_HZ
+            },
+            'gestures': []
+        }
+        
+        # Load all gesture files
+        for filename in os.listdir(GESTURES_FOLDER):
+            if filename.endswith('.pkl'):
+                pkl_path = os.path.join(GESTURES_FOLDER, filename)
+                with open(pkl_path, 'rb') as f:
+                    gesture_data = pickle.load(f)
+                    export_data['gestures'].append(gesture_data)
+        
+        # Save complete dataset
+        export_path = f"complete_dataset_{int(time.time())}.pkl"
+        with open(export_path, 'wb') as f:
+            pickle.dump(export_data, f)
+        
+        status_label.setText(f"Dataset exported: {export_path}")
+        status_label.setStyleSheet("QLabel { color: green; font-weight: bold; }")
+        
+    except Exception as e:
+        status_label.setText(f"Export error: {str(e)}")
+        status_label.setStyleSheet("QLabel { color: red; font-weight: bold; }")
 
 def start_manual_recording():
     """Start manual gesture recording"""
     global gesture_recording, gesture_start_time
+    if not label_input.text().strip():
+        status_label.setText("Error: Please enter a gesture label first!")
+        status_label.setStyleSheet("QLabel { color: red; font-weight: bold; }")
+        return
+        
     gesture_recording = True
     gesture_start_time = time.time()
     reset_gesture()
+    current_gesture['label'] = label_input.text().strip()
     status_label.setText("Recording gesture manually...")
+    status_label.setStyleSheet("QLabel { color: red; font-weight: bold; }")
 
 def stop_manual_recording():
     """Stop manual gesture recording"""
@@ -368,30 +535,46 @@ def stop_manual_recording():
             current_gesture['timestamps']
         )
     status_label.setText("Manual recording stopped")
+    status_label.setStyleSheet("QLabel { color: blue; font-weight: bold; }")
 
 # Connect buttons
 start_gesture_btn.clicked.connect(start_manual_recording)
 stop_gesture_btn.clicked.connect(stop_manual_recording)
 clear_gesture_btn.clicked.connect(reset_gesture)
 save_gesture_btn.clicked.connect(save_gesture_data)
+export_dataset_btn.clicked.connect(export_dataset)
 
-# ---------------- Enhanced Update Loop for Gestures ----------------
+# Initialize dataset display
+update_dataset_info()
+
+# ---------------- Enhanced Update Loop (from better version) ----------------
 def update():
     global last_time, q, velocity, position, prev_accel_world
     global gesture_recording, gesture_state, motion_start_time, last_significant_motion
     global accel_bias, gyro_bias, gesture_metrics
 
-    # Read serial data
-    line = None
-    while ser.in_waiting:
-        try:
-            line = ser.readline().decode(errors='ignore').strip()
-        except:
-            line = None
-            break
-    
-    if not line:
-        return
+    # Handle demo mode
+    if not serial_connected:
+        t_ms = time.time() * 1000
+        ax_raw = np.random.normal(0, 0.1) + 0.5 * np.sin(time.time())
+        ay_raw = np.random.normal(0, 0.1) + 0.3 * np.cos(time.time() * 1.2)
+        az_raw = 9.81 + np.random.normal(0, 0.1)
+        gx_raw = np.random.normal(0, 0.5)
+        gy_raw = np.random.normal(0, 0.5) 
+        gz_raw = np.random.normal(0, 0.5)
+        line = f"{t_ms},{ax_raw},{ay_raw},{az_raw},{gx_raw},{gy_raw},{gz_raw}"
+    else:
+        # Read real serial data
+        line = None
+        while ser.in_waiting:
+            try:
+                line = ser.readline().decode(errors='ignore').strip()
+            except:
+                line = None
+                break
+        
+        if not line:
+            return
 
     # Parse data
     parts = line.split(',')
@@ -433,38 +616,119 @@ def update():
     if q_new is not None:
         q = q_new
 
-    # Calculate Euler angles
-    w, x, y, z = q
-    roll = math.degrees(math.atan2(2*(w*x + y*z), 1 - 2*(x*x + y*y)))
-    sinp = 2*(w*y - z*x)
-    sinp = max(-1.0, min(1.0, sinp))
-    pitch = math.degrees(math.asin(sinp))
-    yaw = math.degrees(math.atan2(2*(w*z + x*y), 1 - 2*(y*y + z*z)))
+    # Enhanced Euler angle calculation with gimbal lock protection
+    def quaternion_to_euler_robust(q):
+        """Convert quaternion to Euler angles with gimbal lock handling"""
+        w, x, y, z = q
+        
+        # Normalize quaternion to prevent numerical errors
+        norm = math.sqrt(w*w + x*x + y*y + z*z)
+        if norm > 0:
+            w, x, y, z = w/norm, x/norm, y/norm, z/norm
+        
+        # Roll (x-axis rotation)
+        sinr_cosp = 2 * (w * x + y * z)
+        cosr_cosp = 1 - 2 * (x * x + y * y)
+        roll = math.atan2(sinr_cosp, cosr_cosp)
+        
+        # Pitch (y-axis rotation) - handle gimbal lock
+        sinp = 2 * (w * y - z * x)
+        # Clamp to prevent numerical issues and handle gimbal lock
+        if abs(sinp) >= 1:
+            pitch = math.copysign(math.pi / 2, sinp)  # Use 90 degrees if out of range
+        else:
+            pitch = math.asin(sinp)
+        
+        # Yaw (z-axis rotation)
+        siny_cosp = 2 * (w * z + x * y)
+        cosy_cosp = 1 - 2 * (y * y + z * z)
+        yaw = math.atan2(siny_cosp, cosy_cosp)
+        
+        return math.degrees(roll), math.degrees(pitch), math.degrees(yaw)
+    
+    # Use robust Euler calculation
+    roll, pitch, yaw = quaternion_to_euler_robust(q)
 
-    # Transform to world coordinates
-    R = np.array([
-        [1-2*(y*y+z*z), 2*(x*y-w*z), 2*(x*z+w*y)],
-        [2*(x*y+w*z), 1-2*(x*x+z*z), 2*(y*z-w*x)],
-        [2*(x*z-w*y), 2*(y*z+w*x), 1-2*(x*x+y*y)]
-    ])
-    accel_world = R @ np.array([ax, ay, az])
-    accel_world[2] -= 9.81  # Remove gravity
+    # Enhanced robust transformation to handle gimbal lock
+    # Use quaternion directly for rotation to avoid gimbal lock issues
+    def rotate_vector_by_quaternion(v, q):
+        """Rotate vector v by quaternion q - more stable than rotation matrix"""
+        w, x, y, z = q
+        # Quaternion rotation: q * v * q_conjugate
+        qv = np.array([0, v[0], v[1], v[2]])  # Pure quaternion from vector
+        
+        # q * qv
+        temp = np.array([
+            -x*qv[1] - y*qv[2] - z*qv[3],
+            w*qv[1] + y*qv[3] - z*qv[2],
+            w*qv[2] + z*qv[1] - x*qv[3],
+            w*qv[3] + x*qv[2] - y*qv[1]
+        ])
+        
+        # temp * q_conjugate
+        result = np.array([
+            temp[0]*w + temp[1]*x + temp[2]*y + temp[3]*z,
+            -temp[0]*x + temp[1]*w - temp[2]*z + temp[3]*y,
+            -temp[0]*y + temp[1]*z + temp[2]*w - temp[3]*x,
+            -temp[0]*z - temp[1]*y + temp[2]*x + temp[3]*w
+        ])
+        
+        return result[1:4]  # Return only vector part
+    
+    # Apply quaternion rotation - more stable than matrix
+    accel_world = rotate_vector_by_quaternion(np.array([ax, ay, az]), q)
+    
+    # Robust gravity removal using quaternion-based gravity vector
+    gravity_sensor = np.array([0, 0, 1])  # Gravity in sensor frame (down)
+    gravity_world = rotate_vector_by_quaternion(gravity_sensor, q) * 9.81
+    accel_world = accel_world - gravity_world
 
-    # Gesture-optimized integration with decay
-    velocity = velocity * VEL_DECAY + accel_world * dt
-    position = position + velocity * dt
+    # Enhanced velocity integration with adaptive filtering based on orientation stability
+    # Check quaternion stability to detect potential gimbal lock situations
+    q_magnitude = np.linalg.norm(q)
+    orientation_stable = abs(q_magnitude - 1.0) < 0.1  # Quaternion should have unit magnitude
+    
+    # Adaptive velocity decay based on orientation stability
+    if orientation_stable:
+        effective_decay = VEL_DECAY
+    else:
+        # More aggressive decay when orientation is unstable
+        effective_decay = VEL_DECAY * 0.95
+        
+    # Enhanced integration with outlier rejection
+    accel_magnitude = np.linalg.norm(accel_world)
+    
+    # Reject unrealistic acceleration values that might come from orientation errors
+    if accel_magnitude < 50.0:  # Reasonable threshold for human gestures
+        velocity = velocity * effective_decay + accel_world * dt
+        position = position + velocity * dt
+    else:
+        # If acceleration seems unrealistic, just apply decay
+        velocity = velocity * effective_decay
+        position = position + velocity * dt
+        
+    # Additional smoothing for position when orientation is unstable
+    if not orientation_stable:
+        # Apply extra smoothing to position
+        if hasattr(update, 'prev_position'):
+            position = 0.7 * position + 0.3 * update.prev_position
+        update.prev_position = position.copy()
+    else:
+        if not hasattr(update, 'prev_position'):
+            update.prev_position = position.copy()
 
-    # Calculate motion magnitude for gesture detection
-    motion_mag = calculate_motion_magnitude(ax, ay, az, gx, gy, gz)
+    # Calculate motion magnitude for gesture detection (orientation-independent)
+    motion_mag = calculate_enhanced_motion_magnitude(ax, ay, az, gx, gy, gz, q)
 
-    # Auto gesture detection
-    if auto_detect_cb.isChecked():
+    # Auto gesture detection (better implementation)
+    if auto_detect_cb.isChecked() and not gesture_recording:
         if gesture_state == 0:  # Idle
             if motion_mag > MOTION_THRESH:
                 gesture_state = 1
                 motion_start_time = t_sec
                 reset_gesture()
                 status_label.setText("Motion detected - starting gesture capture...")
+                status_label.setStyleSheet("QLabel { color: orange; font-weight: bold; }")
         
         elif gesture_state == 1:  # Detecting
             if motion_mag > MOTION_THRESH:
@@ -475,14 +739,16 @@ def update():
                 gesture_state = 2
                 gesture_recording = True
                 status_label.setText("Recording gesture automatically...")
+                status_label.setStyleSheet("QLabel { color: red; font-weight: bold; }")
             
             # Timeout if no significant motion
             if (t_sec - motion_start_time) > 1.0:
                 gesture_state = 0
                 status_label.setText("No gesture detected - returning to idle")
+                status_label.setStyleSheet("QLabel { color: green; font-weight: bold; }")
         
         elif gesture_state == 2:  # Recording
-            if last_significant_motion and (t_sec - last_significant_motion) > 1.0:
+            if last_significant_motion and (t_sec - last_significant_motion) > 0.5:
                 # End of gesture
                 gesture_recording = False
                 gesture_state = 0
@@ -492,9 +758,10 @@ def update():
                         current_gesture['velocities'],
                         current_gesture['timestamps']
                     )
-                status_label.setText("Gesture completed!")
+                status_label.setText("Gesture completed! Enter label and save.")
+                status_label.setStyleSheet("QLabel { color: blue; font-weight: bold; }")
 
-    # Record gesture data
+    # Record gesture data when recording (manual or auto)
     if gesture_recording:
         current_gesture['timestamps'].append(t_sec)
         current_gesture['positions'].append(position.copy())
@@ -503,10 +770,11 @@ def update():
         current_gesture['accelerations'].append([ax, ay, az])
         current_gesture['angular_velocities'].append([gx, gy, gz])
         
-        # Limit gesture length
+        # Limit gesture length to target duration
         if len(current_gesture['timestamps']) > MAX_GESTURE_POINTS:
             for key in current_gesture:
-                current_gesture[key].pop(0)
+                if key != 'label' and isinstance(current_gesture[key], list):
+                    current_gesture[key].pop(0)
 
     # Update buffers
     t_buf.append(t_sec)
@@ -601,6 +869,12 @@ def update():
 timer = QtCore.QTimer()
 timer.timeout.connect(update)
 timer.start(10)  # 100Hz update rate
+
+# Initialize
+if serial_connected:
+    status_label.setText("Connected - Ready for gesture recording")
+else:
+    status_label.setText("Demo mode - Ready for gesture recording")
 
 # Show window
 win.show()
