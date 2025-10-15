@@ -1,3 +1,4 @@
+# preprocessor.py (UPDATED)
 import os
 import numpy as np
 import pandas as pd
@@ -13,20 +14,22 @@ FILTER_ORDER = 4
 PRE_PEAK_FRAC = 0.40   # fraction of window before peak
 # ----------------------------------------
 
-# create output directory structure
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 gestures = [d for d in os.listdir(INPUT_DIR) if os.path.isdir(os.path.join(INPUT_DIR,d))]
 for g in gestures:
     os.makedirs(os.path.join(OUTPUT_DIR, g), exist_ok=True)
 
-# ---------- functions ----------
 def butter_lowpass_filter(data, cutoff=LOWPASS_CUTOFF, fs=SAMPLE_RATE, order=FILTER_ORDER):
-    if data.shape[0] <= 15:  # filtfilt padlen issue
+    if data.shape[0] <= max(16, order*3):
         return data
     nyq = 0.5 * fs
     normal_cutoff = min(0.999, cutoff / nyq)
     b, a = butter(order, normal_cutoff, btype='low', analog=False)
-    return filtfilt(b, a, data, axis=0)
+    try:
+        return filtfilt(b, a, data, axis=0)
+    except Exception:
+        # fallback: return original data if filtfilt fails
+        return data
 
 def find_peak_index(acc_arr):
     mag = np.linalg.norm(acc_arr, axis=1)
@@ -36,32 +39,22 @@ def align_trim_pad(raw_arr, target_len=TARGET_LEN, pre_peak_frac=PRE_PEAK_FRAC):
     N, C = raw_arr.shape
     if N == 0:
         return np.zeros((target_len, C))
-    # pad if too short
     if N < target_len:
         baseline = np.mean(raw_arr, axis=0, keepdims=True)
         pad_len = target_len - N
         raw_arr = np.vstack([raw_arr, np.tile(baseline, (pad_len,1))])
         N = raw_arr.shape[0]
-
-    # low-pass filter
     filtered = butter_lowpass_filter(raw_arr)
-
-    # find peak (gesture center)
     peak_idx = find_peak_index(filtered[:, :3])
     peak_target = int(round(pre_peak_frac * target_len))
     start = peak_idx - peak_target
     end = start + target_len
-
-    # ensure gesture lies fully within window
     if start < 0:
         start, end = 0, target_len
     if end > N:
         end = N
         start = max(0, N - target_len)
-
     window = filtered[start:end, :]
-
-    # final pad if necessary
     if window.shape[0] < target_len:
         baseline = np.mean(filtered[:min(10,N),:], axis=0)
         missing = target_len - window.shape[0]
@@ -69,7 +62,6 @@ def align_trim_pad(raw_arr, target_len=TARGET_LEN, pre_peak_frac=PRE_PEAK_FRAC):
         window = np.vstack([window, pad_arr])
     elif window.shape[0] > target_len:
         window = window[:target_len,:]
-
     return window
 
 def compute_derived_channels(window):
@@ -82,7 +74,6 @@ def compute_derived_channels(window):
     daz = np.concatenate([[0.0], np.diff(az)])
     return np.stack([ax,ay,az,gx,gy,gz,acc_mag,gyro_mag,dax,day,daz], axis=1)
 
-# ---------- process ----------
 for gesture in gestures:
     folder_in = os.path.join(INPUT_DIR, gesture)
     folder_out = os.path.join(OUTPUT_DIR, gesture)
@@ -91,14 +82,26 @@ for gesture in gestures:
         path_in = os.path.join(folder_in, f)
         path_out = os.path.join(folder_out, f)
         df = pd.read_csv(path_in)
-        if 'timestamp' in df.columns:
-            arr = df.drop(columns=['timestamp']).values
+        cols = [c.lower() for c in df.columns]
+        # If already preprocessed (11 features present excluding timestamp), attempt to center/trim/pad only
+        if set(['ax','ay','az','gx','gy','gz','acc_mag','gyro_mag','dax','day','daz']).issubset(set(cols)):
+            arr = df[['ax','ay','az','gx','gy','gz','acc_mag','gyro_mag','dax','day','daz']].values
+            # if length not == TARGET_LEN, align by peak on accel first three columns
+            if arr.shape[0] != TARGET_LEN:
+                raw_first6 = df[['ax','ay','az','gx','gy','gz']].values
+                window_raw = align_trim_pad(raw_first6, TARGET_LEN)
+                features = compute_derived_channels(window_raw)
+            else:
+                features = arr
         else:
-            arr = df.values
-        raw = arr[:, :6]  # ax,ay,az,gx,gy,gz
-        window = align_trim_pad(raw, TARGET_LEN)
-        features = compute_derived_channels(window)
-        # save
+            # assume input has timestamp + first 6 columns as raw ax..gz
+            if 'timestamp' in df.columns:
+                arr = df.drop(columns=['timestamp']).values
+            else:
+                arr = df.values
+            raw = arr[:, :6]
+            window = align_trim_pad(raw, TARGET_LEN)
+            features = compute_derived_channels(window)
         df_out = pd.DataFrame(features, columns=['ax','ay','az','gx','gy','gz','acc_mag','gyro_mag','dax','day','daz'])
         df_out.to_csv(path_out, index=False)
 

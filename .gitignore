@@ -1,12 +1,3 @@
 libraries
-datarecording/imu_dataset/seperate
-datarecording/imu_dataset
-datarecording/seperate
-datarecording/tf_gpu_env
-datarecording/splits
-datarecording/imu_dataset_augmented
-datarecording/imu_dataset_preprocessed
-datarecording/model_checkpoints
-datarecording/model_checkpoints_aug
 
 
