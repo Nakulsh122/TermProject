@@ -72,35 +72,20 @@ Supported gestures:
 
 ## 📁 Directory Structure
 
-+-- imu_dataset/ # Raw recorded CSVs (by gesture)
-+---- circle/
-+---- down/
-+---- idle/
-+---- left/
-+---- right/
-+---- up/
-+
-+-- model_checkpoints/ # Model artifacts
-+---- best_model.pth
-+---- scaler.pkl
-+---- label_map.json
-+---- model_script.pt
-+
-+-- sketch_sep28a/
-+---- sketch_sep28a.ino # ESP32 Arduino sketch
-+
-+-- writer.py # Records IMU data via serial
-+--  preprocessor.py # Preprocesses raw CSVs
-+-- model.py # Training pipeline
-+-- infer.py # Real-time gesture inference
-+-- sampler.py # (Optional) Data sampling helpers
-+-- utils/ # (Optional) utility modules
+├── imu_dataset/              # Raw gesture recordings (CSV files)  
+├── imu_dataset_preprocessed/ # Cleaned and processed data  
+├── model_checkpoints/        # Saved model artifacts  
+├── sketch_sep28a/  
+│   └── sketch_sep28a.ino     # Arduino sketch for ESP32  
+├── writer.py                 # Script for data collection  
+├── preprocessor.py           # Script for data preprocessing  
+├── model.py                  # Script for model training  
+└── infer.py                  # Script for real-time inference  
 
 
 ---
 
 ## 🧩 Dependencies
-
 Create a Python environment and install required packages:
 
 ```bash
@@ -108,12 +93,7 @@ python -m venv venv
 source venv/bin/activate      # (Windows: venv\Scripts\activate)
 pip install -U pip
 pip install numpy pandas scikit-learn scipy matplotlib torch joblib pyserial
-
-
-Each folder corresponds to one gesture label.  
-Each CSV file inside represents **one gesture sample recording**, typically about **1–2 seconds** long.
-
----
+```
 
 ## 🧾 CSV Format
 
@@ -148,9 +128,9 @@ Each `.csv` file contains readings sampled at **~100 Hz** from the IMU sensor co
 
 ## 🧰 How Data Was Collected
 
-1. The ESP32 streams IMU data via Serial at the set baud rate.
-2. The `writer.py` script captures the live serial feed and writes data to `.csv`.
-3. Each recording session corresponds to one gesture (manually labeled via folder name).
+- The ESP32 streams IMU data via Serial at the set baud rate.
+- The `writer.py` script captures the live serial feed and writes data to `.csv`.
+-  Each recording session corresponds to one gesture (manually labeled via folder name).
 
 ---
 
@@ -187,5 +167,30 @@ During preprocessing (`preprocessor.py`):
 | `right`  | 4 |
 | `up`     | 5 |
 
-Label mapping is stored in:  
+Label mapping is stored in:  model_checkpoints/label_map.json  
+
+---
+
+## 🧩 Recommended Practices
+
+- Ensure equal number of samples per gesture for balanced training.
+- When collecting new data, keep orientation of sensor roughly consistent.
+- Always run `preprocessor.py` before training or inference.
+- Keep idle recordings truly stationary to distinguish them clearly.
+
+---
+
+## 🧾 Metadata Summary
+
+| Parameter | Value |
+|------------|--------|
+| Sampling Rate | 100 Hz |
+| File Format | CSV |
+| Total Features | 11 (excluding timestamp) |
+| Gestures | 6 |
+| Typical File Size | 1–5 KB |
+| Recording Duration | 1–2 seconds |
+
+---
+
 
