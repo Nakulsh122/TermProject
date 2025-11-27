@@ -1,4 +1,3 @@
-# writer.py (UPDATED) - saves raw sensor rows only
 import serial
 import time
 import numpy as np
@@ -7,16 +6,14 @@ import os
 import re
 from pathlib import Path
 
-# ----------------- CONFIG -----------------
-SERIAL_PORT = 'COM7'       # ESP32 serial port
+SERIAL_PORT = 'COM7'
 BAUD_RATE = 115200
-WINDOW_DURATION = 1.25     # seconds per window
+WINDOW_DURATION = 1.25
 SAMPLE_RATE = 100
-OUTPUT_DIR = "imu_dataset" # raw data goes here (preprocessor will compute derived)
+OUTPUT_DIR = "imu_dataset"
 STREAM_TIMEOUT = 0.5
 FILENAME_DIGITS = 3
-CONVERT_UNITS = True   # keep conversion to SI: g->m/s^2 and gyro deg/s -> rad/s
-# -----------------------------------------
+CONVERT_UNITS = True
 
 Path(OUTPUT_DIR).mkdir(parents=True, exist_ok=True)
 
@@ -51,6 +48,7 @@ print(f"\nRecording gestures for label '{label_name}'. Press Ctrl+C to stop.")
 print("Press the button on ESP32 to start streaming...")
 
 def parse_line_safe(line):
+    """Safely parses a comma-separated string into a list of floats."""
     parts = line.strip().split(',')
     if len(parts) != 7:
         return None
@@ -114,7 +112,6 @@ try:
         if len(window_data) > 0:
             filename = f"{label_name}_{counter:0{FILENAME_DIGITS}d}.csv"
             filepath = label_dir / filename
-            # save raw rows only: timestamp, ax, ay, az, gx, gy, gz
             df = pd.DataFrame(window_data, columns=['timestamp','ax','ay','az','gx','gy','gz'])
             try:
                 df.to_csv(filepath, index=False)

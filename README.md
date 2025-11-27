@@ -67,6 +67,12 @@ Supported gestures:
      python infer.py
      ```
    - The system waits for one gesture window, classifies it, prints the **predicted gesture** and **confidence**, and resets for the next sample.
+6. **Run the model testing script**
+   - Run the fullstudy.py script1
+     ```bash
+     python fullstudy.py
+     ```
+   - The system runs a complete study on the trained model as well as ablative studies.
 
 ---
 
@@ -81,6 +87,8 @@ Supported gestures:
 ├── preprocessor.py           # Script for data preprocessing  
 ├── model.py                  # Script for model training  
 └── infer.py                  # Script for real-time inference  
+└── fullstudy.py              # Script for model testing  
+
 
 
 ---
@@ -168,6 +176,24 @@ During preprocessing (`preprocessor.py`):
 | `up`     | 5 |
 
 Label mapping is stored in:  model_checkpoints/label_map.json  
+
+---
+
+## 🔬 Model Studies Performed
+
+To validate the architecture and dataset, the `fullstudy.py` script performs the following ablation and robustness studies:
+
+1. **Augmentation Study**
+   Evaluates the impact of various data augmentation techniques—specifically Time Warping, Magnitude Scaling, and Rotation—to determine which methods best improve model generalization and robustness against signal variations.
+
+2. **Sensor Ablation Study**
+   Systematically isolates specific sensor groups (Accelerometer vs. Gyroscope vs. Derived Features) to quantify the contribution of each hardware component to the final classification accuracy.
+
+3. **Length Augmentation Study**
+   Tests the model's performance across different temporal window sizes (50, 100, 150, and 200 samples) to identify the optimal balance between input duration and recognition latency.
+
+4. **Feature Ablation Study**
+   Investigates the marginal utility of the input features by incrementally training the model with an increasing number of channels (from 1 to 11), assessing how much derived features (like magnitude and jerk) contribute compared to raw sensor data. 
 
 ---
 

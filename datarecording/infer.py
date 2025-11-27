@@ -1,4 +1,3 @@
-# realtime_infer_once.py
 import os
 import time
 import json
@@ -11,14 +10,13 @@ import torch.nn as nn
 import serial
 from scipy.signal import butter, filtfilt, resample
 
-# ---------------- CONFIG ----------------
-SERIAL_PORT = "COM7"        # change to your serial port
+SERIAL_PORT = "COM7"
 BAUD_RATE = 115200
-SERIAL_TIMEOUT = 0.2        # serial read timeout (s)
-STREAM_TIMEOUT = 0.6        # consider stream stopped after this many sec of inactivity
-TARGET_LEN = 150            # window length expected by model (samples)
-SAMPLE_RATE = 100           # nominal sampling rate of ESP32
-LOWPASS_CUTOFF = 15.0       # same as preprocessing
+SERIAL_TIMEOUT = 0.2
+STREAM_TIMEOUT = 0.6
+TARGET_LEN = 150
+SAMPLE_RATE = 100
+LOWPASS_CUTOFF = 15.0
 FILTER_ORDER = 4
 SAVED_MODEL_DIR = "model_checkpoints"
 SCALER_PATH = os.path.join(SAVED_MODEL_DIR, "scaler.pkl")
@@ -26,10 +24,9 @@ LABELMAP_PATH = os.path.join(SAVED_MODEL_DIR, "label_map.json")
 TORCHSCRIPT_PATH = os.path.join(SAVED_MODEL_DIR, "model_script.pt")
 STATE_DICT_PATH = os.path.join(SAVED_MODEL_DIR, "best_model.pth")
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-# ----------------------------------------
 
-# -- model class (must match training) --
 class Robust1DCNN(nn.Module):
+    """Defines the 1D CNN architecture used for inference."""
     def __init__(self, in_channels=11, n_classes=6):
         super().__init__()
         self.net = nn.Sequential(
@@ -46,15 +43,14 @@ class Robust1DCNN(nn.Module):
         self.fc = nn.Linear(128, n_classes)
 
     def forward(self, x):
-        x = x.permute(0,2,1)  # batch, channels, time
+        x = x.permute(0,2,1)
         x = self.net(x)
         x = x.squeeze(-1)
         x = self.fc(x)
         return x
 
-# -- preprocessing helpers (same logic as offline preprocessor) --
 def butter_lowpass_filter(data, cutoff=LOWPASS_CUTOFF, fs=SAMPLE_RATE, order=FILTER_ORDER):
-    # data shape (N,C)
+    """Applies a Butterworth lowpass filter to the input data."""
     if data.shape[0] <= 15:
         return data
     nyq = 0.5 * fs
@@ -63,33 +59,28 @@ def butter_lowpass_filter(data, cutoff=LOWPASS_CUTOFF, fs=SAMPLE_RATE, order=FIL
     return filtfilt(b, a, data, axis=0)
 
 def find_peak_index(acc_arr):
-    # acc_arr shape (N,3) or raw (N,C) where first 3 columns are acc
+    """Finds the index of the maximum magnitude in the acceleration data."""
     mag = np.linalg.norm(acc_arr[:, :3], axis=1)
     return int(np.argmax(mag))
 
 def align_trim_pad(raw_arr, target_len=TARGET_LEN, pre_peak_frac=0.40):
-    # raw_arr shape (N,6) : ax..gz
+    """Aligns the signal peak, trims to window size, and handles padding."""
     N, C = raw_arr.shape
     if N == 0:
         return np.zeros((target_len, C), dtype=np.float32)
-    # pad if too short to avoid filtfilt issues
     padded = raw_arr.copy()
     if N < 16:
-        # simple pad with last row
         pad_len = 16 - N
         padded = np.vstack([raw_arr, np.tile(raw_arr[-1:], (pad_len,1))])
         N = padded.shape[0]
 
-    # low-pass filter
     filtered = butter_lowpass_filter(padded)
 
-    # find peak in acceleration magnitude
     peak_idx = find_peak_index(filtered[:, :3])
     peak_target = int(round(pre_peak_frac * target_len))
     start = peak_idx - peak_target
     end = start + target_len
 
-    # clamp window
     if start < 0:
         start, end = 0, target_len
     if end > N:
@@ -98,7 +89,6 @@ def align_trim_pad(raw_arr, target_len=TARGET_LEN, pre_peak_frac=0.40):
 
     window = filtered[start:end, :]
 
-    # final pad/trim
     if window.shape[0] < target_len:
         baseline = np.mean(filtered[:min(10, N), :], axis=0)
         missing = target_len - window.shape[0]
@@ -110,7 +100,7 @@ def align_trim_pad(raw_arr, target_len=TARGET_LEN, pre_peak_frac=0.40):
     return window.astype(np.float32)
 
 def compute_derived_channels(window):
-    # window: (T,6) ax,ay,az,gx,gy,gz
+    """Computes magnitude and derivative channels from the sensor window."""
     ax,ay,az = window[:,0], window[:,1], window[:,2]
     gx,gy,gz = window[:,3], window[:,4], window[:,5]
     acc_mag = np.sqrt(ax*ax + ay*ay + az*az)
@@ -118,11 +108,10 @@ def compute_derived_channels(window):
     dax = np.concatenate([[0.0], np.diff(ax)])
     day = np.concatenate([[0.0], np.diff(ay)])
     daz = np.concatenate([[0.0], np.diff(az)])
-    # feature order matches training: ax,ay,az,gx,gy,gz,acc_mag,gyro_mag,dax,day,daz
     return np.stack([ax,ay,az,gx,gy,gz,acc_mag,gyro_mag,dax,day,daz], axis=1).astype(np.float32)
 
-# -- model & artifacts loader --
 def load_artifacts(savedir=SAVED_MODEL_DIR):
+    """Loads the scaler, label map, and trained model from disk."""
     if not os.path.exists(SCALER_PATH):
         raise FileNotFoundError("Scaler not found at: " + SCALER_PATH)
     scaler = joblib.load(SCALER_PATH)
@@ -133,7 +122,6 @@ def load_artifacts(savedir=SAVED_MODEL_DIR):
         label_to_idx = json.load(f)
     idx_to_label = {int(v):k for k,v in label_to_idx.items()}
 
-    # load model - prefer TorchScript
     model = None
     if os.path.exists(TORCHSCRIPT_PATH):
         try:
@@ -146,7 +134,6 @@ def load_artifacts(savedir=SAVED_MODEL_DIR):
             print("Warning: failed to load TorchScript model:", e)
 
     if os.path.exists(STATE_DICT_PATH):
-        # assume 11 channels
         n_in = 11
         n_classes = len(idx_to_label)
         model_obj = Robust1DCNN(in_channels=n_in, n_classes=n_classes).to(DEVICE)
@@ -158,9 +145,8 @@ def load_artifacts(savedir=SAVED_MODEL_DIR):
 
     raise FileNotFoundError("No model found in " + savedir)
 
-# -- serial parsing --
 def parse_line(line):
-    # expected: timestamp,ax,ay,az,gx,gy,gz
+    """Parses a CSV string line into a list of floats."""
     parts = line.strip().split(",")
     if len(parts) != 7:
         return None
@@ -170,19 +156,19 @@ def parse_line(line):
     except ValueError:
         return None
 
-# -- main loop (one-shot per stream) --
 def run_once(port=SERIAL_PORT, baud=BAUD_RATE):
+    """Listens to the serial port, captures one gesture stream, and runs inference."""
     scaler, idx_to_label, model = load_artifacts()
     ser = None
     try:
         ser = serial.Serial(port, baud, timeout=SERIAL_TIMEOUT)
-        time.sleep(2.0)  # allow device reset
+        time.sleep(2.0)
     except serial.SerialException as e:
         raise SystemExit(f"Could not open serial port {port}: {e}")
 
     print(f"Listening on {port} @ {baud}. Send one gesture (stream), stop the stream; prediction will be printed when the stream ends.\nPress Ctrl+C to quit.")
 
-    raw_buffer = []  # list of [ts,ax,ay,az,gx,gy,gz] rows
+    raw_buffer = []
     last_received = None
 
     try:
@@ -195,31 +181,22 @@ def run_once(port=SERIAL_PORT, baud=BAUD_RATE):
                     continue
                 parsed = parse_line(line)
                 if parsed is None:
-                    # ignore
                     continue
-                # parsed: [ts, ax, ay, az, gx, gy, gz]
                 ts, ax, ay, az, gx, gy, gz = parsed
-                # convert to consistent units used in training/writer:
                 ax_m, ay_m, az_m = ax * 9.80665, ay * 9.80665, az * 9.80665
                 gx_r, gy_r, gz_r = np.deg2rad(gx), np.deg2rad(gy), np.deg2rad(gz)
                 raw_buffer.append([ax_m, ay_m, az_m, gx_r, gy_r, gz_r])
                 last_received = time.time()
             else:
-                # no new raw line; check if we've seen data and the stream timed out
                 if last_received is None:
-                    # nothing seen yet
                     continue
                 if (time.time() - last_received) > STREAM_TIMEOUT and len(raw_buffer) > 0:
-                    # assume stream ended — process the collected buffer once
                     print(f"\nStream stopped; collected {len(raw_buffer)} samples. Preparing window...")
 
-                    raw_arr = np.array(raw_buffer, dtype=np.float32)  # (N,6)
-                    # align/trim/pad using same logic as offline
+                    raw_arr = np.array(raw_buffer, dtype=np.float32)
                     window = align_trim_pad(raw_arr, target_len=TARGET_LEN)
-                    feat = compute_derived_channels(window)  # (TARGET_LEN, 11)
-                    # scale using scaler
+                    feat = compute_derived_channels(window)
                     feat_scaled = scaler.transform(feat).astype(np.float32)
-                    # create tensor (1,T,C)
                     x = torch.from_numpy(feat_scaled).unsqueeze(0).to(DEVICE)
                     with torch.no_grad():
                         logits = model(x)
@@ -229,7 +206,6 @@ def run_once(port=SERIAL_PORT, baud=BAUD_RATE):
                         confidence = float(probs[pred_idx])
 
                     print(f"Prediction: {pred_label}    confidence: {confidence:.3f}")
-                    # clear buffer
                     raw_buffer.clear()
                     last_received = None
                     print("\nReady for next stream... (send gesture and then stop streaming)")

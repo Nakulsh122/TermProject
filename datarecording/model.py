@@ -10,8 +10,7 @@ from sklearn.model_selection import train_test_split
 from sklearn.metrics import classification_report, confusion_matrix
 import random
 
-# ---------------- CONFIG ----------------
-DATA_DIR = "imu_dataset_preprocessed"  # original dataset
+DATA_DIR = "imu_dataset_preprocessed"
 SAVE_DIR = "model_checkpoints"
 NUM_EPOCHS = 40
 BATCH_SIZE = 64
@@ -21,16 +20,15 @@ NUM_WORKERS = 0
 TARGET_LEN = 150
 SEED = 42
 PATIENCE = 7
-AUGMENT = True  # toggle augmentation
-# ----------------------------------------
+AUGMENT = True
 
 torch.manual_seed(SEED)
 np.random.seed(SEED)
 random.seed(SEED)
 os.makedirs(SAVE_DIR, exist_ok=True)
 
-# ---------------- DATASET ----------------
 class IMUDataset(Dataset):
+    """Dataset for loading IMU data with optional scaling."""
     def __init__(self, samples, label_to_idx, scaler=None):
         self.samples = samples
         self.label_to_idx = label_to_idx
@@ -49,13 +47,14 @@ class IMUDataset(Dataset):
         return torch.tensor(X).float(), torch.tensor(y).long()
 
 def collate_batch(batch):
+    """Combines a list of samples into a single batch."""
     X, y = zip(*batch)
     X = torch.stack(X)
     y = torch.tensor(y)
     return X, y
 
-# ---------------- MODEL ----------------
 class Robust1DCNN(nn.Module):
+    """Convolutional Neural Network for 1D sensor data classification."""
     def __init__(self, in_channels=11, n_classes=6):
         super().__init__()
         self.net = nn.Sequential(
@@ -72,13 +71,12 @@ class Robust1DCNN(nn.Module):
         self.fc = nn.Linear(128, n_classes)
 
     def forward(self, x):
-        x = x.permute(0,2,1)  # batch, channels, time
+        x = x.permute(0,2,1)
         x = self.net(x)
         x = x.squeeze(-1)
         x = self.fc(x)
         return x
 
-# ---------------- AUGMENTATION ----------------
 from scipy.signal import resample
 
 TIME_WARP_MAX = 0.1
@@ -86,16 +84,19 @@ MAG_SCALE_MAX = 0.1
 ROT_ANGLE_MAX = 5
 
 def time_warp(X, max_frac=TIME_WARP_MAX):
+    """Applies time warping to the input signal."""
     factor = 1 + random.uniform(-max_frac, max_frac)
     length = int(X.shape[0]*factor)
     return resample(X, length, axis=0)
 
 def magnitude_scale(X, max_scale=MAG_SCALE_MAX):
+    """Scales the magnitude of the signal."""
     scale = 1 + random.uniform(-max_scale, max_scale)
     X[:, :6] *= scale
     return X
 
 def small_rotation(X, max_angle_deg=ROT_ANGLE_MAX):
+    """Rotates the 3D acceleration vector by a small angle."""
     angle = np.deg2rad(random.uniform(-max_angle_deg, max_angle_deg))
     R = np.array([[np.cos(angle), -np.sin(angle), 0],
                   [np.sin(angle),  np.cos(angle), 0],
@@ -104,6 +105,7 @@ def small_rotation(X, max_angle_deg=ROT_ANGLE_MAX):
     return X
 
 def pad_or_trim(X, target_len=TARGET_LEN):
+    """Resizes the input signal to the target length."""
     N = X.shape[0]
     if N < target_len:
         pad_len = target_len - N
@@ -115,6 +117,7 @@ def pad_or_trim(X, target_len=TARGET_LEN):
     return X
 
 def apply_augmentation(X):
+    """Applies random augmentations including time warp, scaling, and rotation."""
     if random.random() < 0.5:
         X = time_warp(X)
     if random.random() < 0.5:
@@ -124,8 +127,8 @@ def apply_augmentation(X):
     X = pad_or_trim(X)
     return X
 
-# ---------------- TRAIN/EVAL ----------------
 def train_one_epoch(model, loader, criterion, optimizer, device):
+    """Trains the model for a single epoch."""
     model.train()
     total_loss, correct, total = 0.0,0,0
     for X, y in loader:
@@ -142,6 +145,7 @@ def train_one_epoch(model, loader, criterion, optimizer, device):
     return total_loss/total, correct/total
 
 def eval_model(model, loader, criterion, device):
+    """Evaluates the model on the provided data loader."""
     model.eval()
     total_loss, correct, total = 0.0,0,0
     all_y, all_pred = [],[]
@@ -158,16 +162,15 @@ def eval_model(model, loader, criterion, device):
             all_pred.extend(pred.cpu().numpy())
     return total_loss/total, correct/total, all_y, all_pred
 
-# ---------------- MAIN ----------------
 def main():
+    """Main execution function for training and evaluating the model."""
     gestures = [d for d in os.listdir(DATA_DIR) if os.path.isdir(os.path.join(DATA_DIR,d))]
     files_by_gesture = {g: sorted([os.path.join(DATA_DIR,g,f) for f in os.listdir(os.path.join(DATA_DIR,g)) if f.endswith('.csv')]) for g in gestures}
 
-    # Split: all users except last (per gesture) -> train/val, last user -> test
     train_samples, val_samples, test_samples = [], [], []
     for g in gestures:
         all_files = files_by_gesture[g]
-        test_files = all_files[-50:]  # last user
+        test_files = all_files[-50:]
         trainval_files = all_files[:-50]
         train_files, val_files = train_test_split(trainval_files, test_size=0.1, random_state=SEED)
         
@@ -180,7 +183,6 @@ def main():
 
     label_to_idx = {g:i for i,g in enumerate(gestures)}
 
-    # Fit scaler on training data
     flat_feats = []
     for s in train_samples:
         df = pd.read_csv(s['path'])
@@ -190,12 +192,10 @@ def main():
     scaler = StandardScaler().fit(flat_feats)
     print("Scaler ready.")
 
-    # Datasets
     train_dataset = IMUDataset(train_samples, label_to_idx, scaler=scaler)
     val_dataset = IMUDataset(val_samples, label_to_idx, scaler=scaler)
     test_dataset = IMUDataset(test_samples, label_to_idx, scaler=scaler)
 
-    # DataLoaders
     train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, collate_fn=collate_batch, num_workers=NUM_WORKERS)
     val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False, collate_fn=collate_batch, num_workers=NUM_WORKERS)
     test_loader = DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=False, collate_fn=collate_batch, num_workers=NUM_WORKERS)
@@ -228,13 +228,11 @@ def main():
                 print("Early stopping.")
                 break
 
-    # Final test
     print("Loading best model for test evaluation...")
     model.load_state_dict(torch.load(os.path.join(SAVE_DIR, "best_model.pth"), map_location=device))
     test_loss, test_acc, test_y, test_pred = eval_model(model, test_loader, criterion, device)
     print(f"Test loss {test_loss:.4f} acc {test_acc:.4f}")
     
-    # Ensure classification_report doesn't fail
     labels = list(range(len(gestures)))
     print("Classification report (test):")
     print(classification_report(test_y, test_pred, labels=labels, target_names=gestures))

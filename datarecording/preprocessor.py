@@ -1,18 +1,15 @@
-# preprocessor.py (UPDATED)
 import os
 import numpy as np
 import pandas as pd
 from scipy.signal import butter, filtfilt
 
-# ---------------- CONFIG ----------------
 INPUT_DIR = "imu_dataset"
 OUTPUT_DIR = "imu_dataset_preprocessed"
-TARGET_LEN = 150       # 1.5 sec @ 100Hz
+TARGET_LEN = 150
 SAMPLE_RATE = 100
-LOWPASS_CUTOFF = 15.0  # Hz
+LOWPASS_CUTOFF = 15.0
 FILTER_ORDER = 4
-PRE_PEAK_FRAC = 0.40   # fraction of window before peak
-# ----------------------------------------
+PRE_PEAK_FRAC = 0.40
 
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 gestures = [d for d in os.listdir(INPUT_DIR) if os.path.isdir(os.path.join(INPUT_DIR,d))]
@@ -20,6 +17,7 @@ for g in gestures:
     os.makedirs(os.path.join(OUTPUT_DIR, g), exist_ok=True)
 
 def butter_lowpass_filter(data, cutoff=LOWPASS_CUTOFF, fs=SAMPLE_RATE, order=FILTER_ORDER):
+    """Applies a Butterworth lowpass filter to remove noise from the data."""
     if data.shape[0] <= max(16, order*3):
         return data
     nyq = 0.5 * fs
@@ -28,14 +26,15 @@ def butter_lowpass_filter(data, cutoff=LOWPASS_CUTOFF, fs=SAMPLE_RATE, order=FIL
     try:
         return filtfilt(b, a, data, axis=0)
     except Exception:
-        # fallback: return original data if filtfilt fails
         return data
 
 def find_peak_index(acc_arr):
+    """Identifies the index of the peak magnitude in the acceleration data."""
     mag = np.linalg.norm(acc_arr, axis=1)
     return int(np.argmax(mag))
 
 def align_trim_pad(raw_arr, target_len=TARGET_LEN, pre_peak_frac=PRE_PEAK_FRAC):
+    """Centers the data on the peak acceleration and fits it to the target length."""
     N, C = raw_arr.shape
     if N == 0:
         return np.zeros((target_len, C))
@@ -65,6 +64,7 @@ def align_trim_pad(raw_arr, target_len=TARGET_LEN, pre_peak_frac=PRE_PEAK_FRAC):
     return window
 
 def compute_derived_channels(window):
+    """Calculates magnitude and derivative features for the IMU data window."""
     ax,ay,az = window[:,0], window[:,1], window[:,2]
     gx,gy,gz = window[:,3], window[:,4], window[:,5]
     acc_mag = np.sqrt(ax*ax + ay*ay + az*az)
@@ -83,10 +83,8 @@ for gesture in gestures:
         path_out = os.path.join(folder_out, f)
         df = pd.read_csv(path_in)
         cols = [c.lower() for c in df.columns]
-        # If already preprocessed (11 features present excluding timestamp), attempt to center/trim/pad only
         if set(['ax','ay','az','gx','gy','gz','acc_mag','gyro_mag','dax','day','daz']).issubset(set(cols)):
             arr = df[['ax','ay','az','gx','gy','gz','acc_mag','gyro_mag','dax','day','daz']].values
-            # if length not == TARGET_LEN, align by peak on accel first three columns
             if arr.shape[0] != TARGET_LEN:
                 raw_first6 = df[['ax','ay','az','gx','gy','gz']].values
                 window_raw = align_trim_pad(raw_first6, TARGET_LEN)
@@ -94,7 +92,6 @@ for gesture in gestures:
             else:
                 features = arr
         else:
-            # assume input has timestamp + first 6 columns as raw ax..gz
             if 'timestamp' in df.columns:
                 arr = df.drop(columns=['timestamp']).values
             else:
